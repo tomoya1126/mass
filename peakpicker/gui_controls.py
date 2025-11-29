@@ -493,15 +493,26 @@ class ControlsMixin:
         self.dragging = False
         self._clear_drag_span()
 
+        # Ensure range markers render immediately after selection
+        if self.range_selection_points:
+            self.update_plot()
+
     def on_scroll(self: 'PeakPickerGUI', event):
         """Handle wheel scroll for zooming and vertical scaling."""
         if event.inaxes != self.ax or self.spectrum is None:
             return
 
+        # Determine wheel direction (mouse or trackpad)
+        direction = 1
+        if getattr(event, 'button', None) in ('up', 'down'):
+            direction = 1 if event.button == 'up' else -1
+        elif getattr(event, 'step', 0) != 0:
+            direction = 1 if event.step > 0 else -1
+
         if event.key == 'control':
             # Adjust Y scale
             ylim = self.ax.get_ylim()
-            scale = 0.9 if event.step > 0 else 1.1
+            scale = 0.9 if direction > 0 else 1.1
             center_y = (ylim[0] + ylim[1]) / 2
             new_range = (ylim[1] - ylim[0]) * scale / 2
             self.ax.set_ylim(max(0, center_y - new_range), center_y + new_range)
@@ -516,8 +527,24 @@ class ControlsMixin:
         if self.center_pos is None:
             return
 
-        factor = 0.8 if event.step > 0 else 1.25
-        self.window_size = max(1e-3, (self.ax.get_xlim()[1] - self.ax.get_xlim()[0]) * factor)
+        # Up scroll zooms in, down scroll zooms out
+        zoom_in_factor = 0.8
+        zoom_out_factor = 1 / zoom_in_factor
+        factor = zoom_in_factor if direction > 0 else zoom_out_factor
+
+        current_width = self.ax.get_xlim()[1] - self.ax.get_xlim()[0]
+
+        # Calculate maximum allowable width
+        if self.axis_mode.get() == 'mz' and self.calibration:
+            total_width = abs(
+                self.calibration.tof_to_mz(self.spectrum.tof.max()) -
+                self.calibration.tof_to_mz(self.spectrum.tof.min())
+            )
+        else:
+            total_width = self.spectrum.tof.max() - self.spectrum.tof.min()
+
+        new_width = max(1e-3, min(total_width, current_width * factor))
+        self.window_size = new_width
         self.update_plot()
 
     def _event_to_tof(self: 'PeakPickerGUI', event):
