@@ -483,9 +483,9 @@ class PeakPickerGUI(PlottingMixin, ControlsMixin):
         if mode == 'peak_assign':
             self.info_text.insert(END, "モード: ピーク同定\n")
             if self.calibration:
-                self.info_text.insert(END, "操作: プロット上で範囲を選択（2点クリック）→ 自動フィットボタンを押す\n")
+                self.info_text.insert(END, "操作: プロット上でドラッグ（または2点クリック）で範囲選択 → 自動フィットボタンを押す\n")
             else:
-                self.info_text.insert(END, "操作: プロット上で範囲を選択（2点クリック）→ 自動フィットボタンを押す → m/z を入力\n")
+                self.info_text.insert(END, "操作: プロット上でドラッグ（または2点クリック）で範囲選択 → 自動フィットボタンを押す → m/z を入力\n")
 
             self.info_text.insert(END, f"\n識別済みピーク数: {len(self.peaks)}\n")
 

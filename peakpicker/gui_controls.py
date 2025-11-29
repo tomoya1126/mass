@@ -473,9 +473,11 @@ class ControlsMixin:
             menu.add_command(label="このピークを却下", command=lambda: self._set_peak_status(nearest_idx, 'rejected'))
             menu.add_separator()
             menu.add_command(label="このピークを単峰フィット", command=lambda: self._fit_peak_roi(nearest_idx))
+            menu.add_command(label="このピークと近傍を多峰フィット", command=lambda: self._fit_peak_with_neighbors(nearest_idx))
             menu.add_command(label="このピークにジャンプ（中心ズーム）", command=lambda: self._jump_to_peak(nearest_idx))
         else:
             menu.add_command(label="ここを中心にズームイン", command=lambda: self._zoom_to_position(tof_pos))
+            menu.add_command(label="ここを中心に指定幅で範囲を作成", command=lambda: self._create_range_with_width(tof_pos))
         menu.add_separator()
         menu.add_command(label="ここから範囲を開始", command=lambda: self._start_range_at(tof_pos))
 
@@ -484,7 +486,10 @@ class ControlsMixin:
             if gui_event and hasattr(gui_event, 'x_root'):
                 menu.tk_popup(gui_event.x_root, gui_event.y_root)
             else:
-                menu.tk_popup(int(event.x), int(event.y))
+                # Fall back to current pointer position when no GUI event is available
+                x_root = int(event.x) if event is not None else self.root.winfo_pointerx()
+                y_root = int(event.y) if event is not None else self.root.winfo_pointery()
+                menu.tk_popup(x_root, y_root)
         finally:
             menu.grab_release()
 
@@ -522,6 +527,26 @@ class ControlsMixin:
         self.range_lines = []
         self.update_plot()
 
+    def _create_range_with_width(self: 'PeakPickerGUI', tof_pos: float):
+        """Create a symmetric range around a position with user-specified width."""
+        width = simpledialog.askfloat(
+            "範囲の幅",
+            "範囲の幅を入力してください (同じ単位の数値)",
+            parent=self.root,
+            minvalue=0.1,
+        )
+
+        if not width:
+            return
+
+        start = tof_pos - width / 2
+        end = tof_pos + width / 2
+        self.range_selection_points = [start, end]
+        self.range_lines = []
+        self.update_plot()
+
+        self._show_range_menu(None, start, end)
+
     def _auto_detect_in_range(self: 'PeakPickerGUI', start: float, end: float):
         """Helper to run auto-detect within a provided range."""
         self.range_selection_points = [start, end]
@@ -542,6 +567,59 @@ class ControlsMixin:
         half_width = peak.roi.width / 2 if peak.roi else self.window_size / 20 if self.window_size else 5
         self.range_selection_points = [peak.center_tof - half_width, peak.center_tof + half_width]
         self.fit_selected_range()
+
+    def _fit_peak_with_neighbors(self: 'PeakPickerGUI', peak_index: int):
+        """Fit overlapping peaks around the specified peak."""
+        if not (0 <= peak_index < len(self.peaks)):
+            return
+
+        if self.spectrum is None:
+            messagebox.showwarning("フィットエラー", "スペクトルデータを読み込んでください。")
+            return
+
+        peak = self.peaks[peak_index]
+        n_peaks = simpledialog.askinteger(
+            "多峰フィット",
+            "フィットするピーク数を入力してください（2または3）",
+            parent=self.root,
+            minvalue=2,
+            maxvalue=3,
+        )
+
+        if n_peaks is None:
+            return
+
+        if peak.roi:
+            roi_width = peak.roi.width * 1.5
+        elif self.window_size:
+            roi_width = max(self.window_size * 0.1, 5)
+        else:
+            roi_width = 20
+
+        roi = ROI(start=peak.center_tof - roi_width / 2, end=peak.center_tof + roi_width / 2, axis_type='tof')
+
+        try:
+            fitted_peaks = fit_overlapping_peaks(self.spectrum, roi, n_peaks=n_peaks)
+
+            if self.calibration:
+                for p in fitted_peaks:
+                    mz = self.calibration.tof_to_mz(p.center_tof)
+                    if mz:
+                        p.center_mz = mz
+
+            self.peaks.extend(fitted_peaks)
+            self.peaks.sort(key=lambda p: p.center_tof)
+            self.selected_peak_index = self.peaks.index(fitted_peaks[0]) if fitted_peaks else peak_index
+
+            self._update_peak_table()
+            self._update_info_text()
+            self._update_button_states()
+            self.update_plot()
+
+            messagebox.showinfo("多峰フィット成功", f"{len(fitted_peaks)} 個のピークをフィットしました。")
+        except Exception as e:
+            messagebox.showerror("フィットエラー", f"多峰フィットに失敗しました:\n{e}")
+            logger.error(f"Multi-peak fit error: {e}")
 
     def _jump_to_peak(self: 'PeakPickerGUI', peak_index: int):
         """Center the view on a chosen peak."""
