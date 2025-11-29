@@ -5,6 +5,8 @@ Version 2.0
 TOF-SIMS（Time-of-Flight Secondary Ion Mass Spectrometry）スペクトルの解析用Pythonツールです。
 MPAファイルの読み込み、ピーク同定、m/zキャリブレーション、自動ピークフィットなどの機能を提供します。
 
+UIのマウス操作コンセプト案は [UI_MOUSE_SPEC.md](UI_MOUSE_SPEC.md) にまとめています。
+
 ## 主な機能
 
 ### 基本機能

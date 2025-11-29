@@ -120,6 +120,9 @@ class Peak:
     roi: ROI
     center_mz: Optional[float] = None
 
+    # State
+    status: str = 'proposed'  # 'proposed', 'accepted', 'rejected'
+
     # Fit results
     sigma: Optional[float] = None
     fwhm: Optional[float] = None
@@ -149,6 +152,7 @@ class Peak:
             'height': self.height,
             'roi_start': self.roi.start,
             'roi_end': self.roi.end,
+            'status': self.status,
             'sigma': self.sigma,
             'fwhm': self.fwhm,
             'area_integrated': self.area_integrated,
@@ -171,6 +175,7 @@ class Peak:
             center_mz=data.get('center_mz'),
             height=data['height'],
             roi=roi,
+            status=data.get('status', 'proposed'),
             sigma=data.get('sigma'),
             fwhm=data.get('fwhm'),
             area_integrated=data.get('area_integrated'),

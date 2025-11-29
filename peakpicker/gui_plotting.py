@@ -60,9 +60,10 @@ class PlottingMixin:
         if len(x_view) > 0:
             self.ax.plot(x_view, y_view, label='Spectrum', color='navy', lw=1.0)
 
-            # Set y limits with padding
-            y_max = np.max(y_view)
-            y_pad = y_max * 0.05 if y_max > 0 else 1.0
+            # Set y limits with padding (scaled by wheel zoom if requested)
+            raw_y_max = np.max(y_view)
+            y_max = raw_y_max * self.y_scale_factor
+            y_pad = raw_y_max * 0.05 * self.y_scale_factor if raw_y_max > 0 else 1.0
             self.ax.set_ylim(0, y_max + y_pad)
         else:
             self.ax.plot([], [], label='Spectrum', color='navy', lw=1.0)
@@ -112,20 +113,47 @@ class PlottingMixin:
             # Check if peak is in view
             x_min, x_max = self.ax.get_xlim()
             if x_min <= x_pos <= x_max:
-                # Color based on selection
-                color = 'red' if i == self.selected_peak_index else 'blue'
+                # Color/style based on selection and status
+                color, linestyle, linewidth, alpha = self._style_for_peak(peak, is_selected=(i == self.selected_peak_index))
 
                 # Draw vertical line
-                line = self.ax.axvline(x=x_pos, color=color, ls='--', lw=0.8, label='_peak_line')
+                line = self.ax.axvline(x=x_pos, color=color, ls=linestyle, lw=linewidth, alpha=alpha, label='_peak_line')
 
                 # Draw label
                 txt_y = peak.height * 1.05 if peak.height * 1.05 < txt_y_default else txt_y_default
                 text = self.ax.text(x_pos, txt_y, label_text, color=color,
-                                   ha='center', va='bottom', picker=5, label='_peak_text')
+                                   ha='center', va='bottom', picker=5, label='_peak_text', alpha=alpha)
 
                 # Store references
                 peak.line = line
                 peak.text = text
+
+    def _style_for_peak(self: 'PeakPickerGUI', peak, is_selected: bool):
+        """Return plotting style based on peak status/selection."""
+        status = getattr(peak, 'status', 'proposed')
+
+        if status == 'accepted':
+            color = 'darkgreen'
+            linestyle = '-'
+            linewidth = 1.4
+            alpha = 1.0
+        elif status == 'rejected':
+            color = 'gray'
+            linestyle = ':'
+            linewidth = 0.9
+            alpha = 0.5
+        else:
+            color = 'royalblue'
+            linestyle = '--'
+            linewidth = 1.0
+            alpha = 0.9
+
+        if is_selected:
+            color = 'darkorange'
+            linewidth = max(linewidth, 1.6)
+            alpha = 1.0
+
+        return color, linestyle, linewidth, alpha
 
     def _draw_range_lines(self: 'PeakPickerGUI', x_label: str):
         """Draw range selection lines."""
@@ -213,6 +241,11 @@ class PlottingMixin:
 
     def on_plot_motion(self: 'PeakPickerGUI', event):
         """Handle mouse motion over plot (cursor info)."""
+        if getattr(self, 'drag_start', None) is not None and event.inaxes == self.ax:
+            current_tof = self._convert_axis_to_tof(event.xdata) if event.xdata is not None else None
+            if current_tof is not None:
+                self._update_drag_span(self.drag_start, current_tof)
+
         if event.inaxes != self.ax or self.spectrum is None:
             if self.cursor_text and self.cursor_text in self.ax.texts:
                 try:
@@ -257,4 +290,21 @@ class PlottingMixin:
                 bbox=dict(boxstyle='round,pad=0.3', fc='lightyellow', alpha=0.8)
             )
 
+        self.canvas.draw_idle()
+
+    def _update_drag_span(self: 'PeakPickerGUI', start_tof: float, end_tof: float):
+        """Draw or update a drag selection span."""
+        start_x = self._convert_tof_to_axis(start_tof)
+        end_x = self._convert_tof_to_axis(end_tof)
+        if start_x is None or end_x is None:
+            return
+
+        if self.drag_span and self.drag_span in self.ax.patches:
+            try:
+                self.drag_span.remove()
+            except Exception:
+                pass
+
+        x0, x1 = sorted([start_x, end_x])
+        self.drag_span = self.ax.axvspan(x0, x1, color='skyblue', alpha=0.2, label='_drag_span')
         self.canvas.draw_idle()

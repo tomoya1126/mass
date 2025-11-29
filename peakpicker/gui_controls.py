@@ -6,6 +6,7 @@ Handles user interactions: calibration, peak fitting, range selection, etc.
 """
 
 import logging
+import tkinter as tk
 import numpy as np
 from tkinter import messagebox, simpledialog
 from typing import TYPE_CHECKING
@@ -266,32 +267,70 @@ class ControlsMixin:
         except ValueError:
             messagebox.showerror("入力エラー", "有効な数値を入力してください。")
 
-    def on_plot_click(self: 'PeakPickerGUI', event):
-        """Handle mouse click on plot (range selection)."""
-        if event.inaxes != self.ax or event.button != 1 or self.spectrum is None:
+    def on_plot_button_press(self: 'PeakPickerGUI', event):
+        """Handle mouse press on the plot (selection/drag/context)."""
+        if self.spectrum is None or event.inaxes != self.ax:
             return
 
-        # Get position in TOF (always work in TOF internally)
-        if self.axis_mode.get() == 'mz' and self.calibration:
-            mz_pos = event.xdata
-            tof_pos = self.calibration.mz_to_tof(mz_pos)
-        else:
-            tof_pos = event.xdata
+        tof_pos = self._convert_axis_to_tof(event.xdata)
+        if tof_pos is None:
+            return
 
-        # Reset if starting new selection
-        if len(self.range_selection_points) == 0:
-            self.range_lines = []
+        if event.button == 1:
+            if event.dblclick:
+                self._handle_peak_double_click(tof_pos, event)
+                return
 
-        self.range_selection_points.append(tof_pos)
+            # Start drag selection
+            self.drag_start = tof_pos
+            if self.drag_span and self.drag_span in self.ax.patches:
+                try:
+                    self.drag_span.remove()
+                except Exception:
+                    pass
+            self.drag_span = None
 
-        logger.debug(f"Range point {len(self.range_selection_points)}: TOF={tof_pos:.2f}")
+        elif event.button == 3:
+            self._show_context_menu(event, tof_pos)
 
-        # Draw marker
+    def on_plot_button_release(self: 'PeakPickerGUI', event):
+        """Handle mouse release (click vs drag decision)."""
+        if self.spectrum is None or self.drag_start is None or event.button != 1:
+            return
+
+        tof_end = self._convert_axis_to_tof(event.xdata)
+        if tof_end is None:
+            self.drag_start = None
+            return
+
+        start, end = self.drag_start, tof_end
+        self.drag_start = None
+
+        # Remove drag visual
+        if self.drag_span and self.drag_span in self.ax.patches:
+            try:
+                self.drag_span.remove()
+            except Exception:
+                pass
+        self.drag_span = None
+
+        threshold = self.window_size * 0.01 if self.window_size else 1.0
+        if abs(end - start) < threshold:
+            # Treat as click: select nearest peak
+            self._select_peak_near(tof_end)
+            return
+
+        # Range selection via drag
+        self.range_selection_points = [start, end]
+        self.range_lines = []
         self.update_plot()
 
-        # Process range if 2 points selected
-        if len(self.range_selection_points) == 2:
+        # Auto-process for summation mode
+        if self.analysis_mode.get() == 'count_sum':
             self._process_range_selection()
+            return
+
+        self._show_range_menu(event, start, end)
 
     def _process_range_selection(self: 'PeakPickerGUI'):
         """Process the selected range based on current mode."""
@@ -358,6 +397,273 @@ class ControlsMixin:
             self.range_lines = []
             self.update_plot()
 
+    def _convert_axis_to_tof(self: 'PeakPickerGUI', x_axis: float):
+        """Convert an axis x position to TOF regardless of display mode."""
+        if x_axis is None:
+            return None
+
+        if self.axis_mode.get() == 'mz' and self.calibration:
+            return self.calibration.mz_to_tof(x_axis)
+        return x_axis
+
+    def _convert_tof_to_axis(self: 'PeakPickerGUI', tof_pos: float):
+        """Convert a TOF position to current x-axis unit."""
+        if tof_pos is None:
+            return None
+
+        if self.axis_mode.get() == 'mz' and self.calibration:
+            return self.calibration.tof_to_mz(tof_pos)
+        return tof_pos
+
+    def _select_peak_near(self: 'PeakPickerGUI', tof_pos: float):
+        """Select the nearest peak to the given TOF position."""
+        if not self.peaks:
+            return
+
+        distances = [abs(p.center_tof - tof_pos) for p in self.peaks]
+        nearest_idx = int(np.argmin(distances))
+        window_tol = self.window_size * 0.05 if self.window_size else distances[nearest_idx]
+
+        if distances[nearest_idx] <= window_tol:
+            self.selected_peak_index = nearest_idx
+            self.center_pos = self.peaks[nearest_idx].center_tof
+            logger.info(f"Selected peak #{nearest_idx + 1} at TOF={self.center_pos:.2f}")
+            self._update_peak_table()
+            self._update_button_states()
+            self.update_plot()
+
+    def _handle_peak_double_click(self: 'PeakPickerGUI', tof_pos: float, event):
+        """Toggle peak status on double click (with Shift for reject)."""
+        if not self.peaks:
+            return
+
+        distances = [abs(p.center_tof - tof_pos) for p in self.peaks]
+        nearest_idx = int(np.argmin(distances))
+        nearest_peak = self.peaks[nearest_idx]
+
+        # Use generous tolerance relative to window
+        if self.window_size and distances[nearest_idx] > self.window_size * 0.05:
+            return
+
+        if event.key and 'shift' in event.key.lower():
+            nearest_peak.status = 'rejected'
+        else:
+            nearest_peak.status = 'accepted' if nearest_peak.status != 'accepted' else 'proposed'
+
+        self.selected_peak_index = nearest_idx
+        logger.info(f"Peak #{nearest_idx + 1} status -> {nearest_peak.status}")
+        self._update_peak_table()
+        self._update_info_text()
+        self._update_button_states()
+        self.update_plot()
+
+    def _show_context_menu(self: 'PeakPickerGUI', event, tof_pos: float):
+        """Show context menu based on click position."""
+        nearest_idx = None
+        if self.peaks:
+            distances = [abs(p.center_tof - tof_pos) for p in self.peaks]
+            min_idx = int(np.argmin(distances))
+            if self.window_size is None or distances[min_idx] <= self.window_size * 0.05:
+                nearest_idx = min_idx
+
+        menu = tk.Menu(self.root, tearoff=0)
+
+        if nearest_idx is not None:
+            menu.add_command(label="このピークを採用", command=lambda: self._set_peak_status(nearest_idx, 'accepted'))
+            menu.add_command(label="このピークを却下", command=lambda: self._set_peak_status(nearest_idx, 'rejected'))
+            menu.add_separator()
+            menu.add_command(label="このピークを単峰フィット", command=lambda: self._fit_peak_roi(nearest_idx))
+            menu.add_command(label="このピークと近傍を多峰フィット", command=lambda: self._fit_peak_with_neighbors(nearest_idx))
+            menu.add_command(label="このピークにジャンプ（中心ズーム）", command=lambda: self._jump_to_peak(nearest_idx))
+        else:
+            menu.add_command(label="ここを中心にズームイン", command=lambda: self._zoom_to_position(tof_pos))
+            menu.add_command(label="ここを中心に指定幅で範囲を作成", command=lambda: self._create_range_with_width(tof_pos))
+        menu.add_separator()
+        menu.add_command(label="ここから範囲を開始", command=lambda: self._start_range_at(tof_pos))
+
+        try:
+            gui_event = getattr(event, 'guiEvent', None)
+            if gui_event and hasattr(gui_event, 'x_root'):
+                menu.tk_popup(gui_event.x_root, gui_event.y_root)
+            else:
+                # Fall back to current pointer position when no GUI event is available
+                x_root = int(event.x) if event is not None else self.root.winfo_pointerx()
+                y_root = int(event.y) if event is not None else self.root.winfo_pointery()
+                menu.tk_popup(x_root, y_root)
+        finally:
+            menu.grab_release()
+
+    def _show_range_menu(self: 'PeakPickerGUI', event, start: float, end: float):
+        """Offer actions after drag range selection."""
+        menu = tk.Menu(self.root, tearoff=0)
+        menu.add_command(label="この範囲をズーム", command=lambda: self._zoom_to_range(start, end))
+        menu.add_command(label="この範囲のピークを自動検出＋フィット", command=lambda: self._auto_detect_in_range(start, end))
+        menu.add_command(label="この範囲をROIとして保存", command=lambda: self._save_range_as_roi(start, end))
+
+        try:
+            gui_event = getattr(event, 'guiEvent', None)
+            if gui_event and hasattr(gui_event, 'x_root'):
+                menu.tk_popup(gui_event.x_root, gui_event.y_root)
+            else:
+                menu.tk_popup(int(event.x), int(event.y))
+        finally:
+            menu.grab_release()
+
+    def _zoom_to_range(self: 'PeakPickerGUI', start: float, end: float):
+        """Zoom the view to the dragged range."""
+        self.center_pos = (start + end) / 2
+        self.window_size = abs(end - start)
+        self.update_plot()
+
+    def _zoom_to_position(self: 'PeakPickerGUI', tof_pos: float):
+        """Zoom in around a single position."""
+        self.center_pos = tof_pos
+        self.window_size = max(10, self.window_size / 1.5 if self.window_size else 50)
+        self.update_plot()
+
+    def _start_range_at(self: 'PeakPickerGUI', tof_pos: float):
+        """Start a range selection anchored at the right-click position."""
+        self.range_selection_points = [tof_pos]
+        self.range_lines = []
+        self.update_plot()
+
+    def _create_range_with_width(self: 'PeakPickerGUI', tof_pos: float):
+        """Create a symmetric range around a position with user-specified width."""
+        width = simpledialog.askfloat(
+            "範囲の幅",
+            "範囲の幅を入力してください (同じ単位の数値)",
+            parent=self.root,
+            minvalue=0.1,
+        )
+
+        if not width:
+            return
+
+        start = tof_pos - width / 2
+        end = tof_pos + width / 2
+        self.range_selection_points = [start, end]
+        self.range_lines = []
+        self.update_plot()
+
+        self._show_range_menu(None, start, end)
+
+    def _auto_detect_in_range(self: 'PeakPickerGUI', start: float, end: float):
+        """Helper to run auto-detect within a provided range."""
+        self.range_selection_points = [start, end]
+        self.auto_detect_and_fit()
+
+    def _save_range_as_roi(self: 'PeakPickerGUI', start: float, end: float):
+        """Save the dragged range as ROI info text (lightweight stub)."""
+        roi = ROI(start=min(start, end), end=max(start, end))
+        self.info_text.insert('end', f"ROI 保存: {roi.start:.2f}-{roi.end:.2f} (TOF)\n")
+        self.info_text.see('end')
+
+    def _fit_peak_roi(self: 'PeakPickerGUI', peak_index: int):
+        """Trigger single-peak fit around an existing peak."""
+        if not (0 <= peak_index < len(self.peaks)):
+            return
+
+        peak = self.peaks[peak_index]
+        half_width = peak.roi.width / 2 if peak.roi else self.window_size / 20 if self.window_size else 5
+        self.range_selection_points = [peak.center_tof - half_width, peak.center_tof + half_width]
+        self.fit_selected_range()
+
+    def _fit_peak_with_neighbors(self: 'PeakPickerGUI', peak_index: int):
+        """Fit overlapping peaks around the specified peak."""
+        if not (0 <= peak_index < len(self.peaks)):
+            return
+
+        if self.spectrum is None:
+            messagebox.showwarning("フィットエラー", "スペクトルデータを読み込んでください。")
+            return
+
+        peak = self.peaks[peak_index]
+        n_peaks = simpledialog.askinteger(
+            "多峰フィット",
+            "フィットするピーク数を入力してください（2または3）",
+            parent=self.root,
+            minvalue=2,
+            maxvalue=3,
+        )
+
+        if n_peaks is None:
+            return
+
+        if peak.roi:
+            roi_width = peak.roi.width * 1.5
+        elif self.window_size:
+            roi_width = max(self.window_size * 0.1, 5)
+        else:
+            roi_width = 20
+
+        roi = ROI(start=peak.center_tof - roi_width / 2, end=peak.center_tof + roi_width / 2, axis_type='tof')
+
+        try:
+            fitted_peaks = fit_overlapping_peaks(self.spectrum, roi, n_peaks=n_peaks)
+
+            if self.calibration:
+                for p in fitted_peaks:
+                    mz = self.calibration.tof_to_mz(p.center_tof)
+                    if mz:
+                        p.center_mz = mz
+
+            self.peaks.extend(fitted_peaks)
+            self.peaks.sort(key=lambda p: p.center_tof)
+            self.selected_peak_index = self.peaks.index(fitted_peaks[0]) if fitted_peaks else peak_index
+
+            self._update_peak_table()
+            self._update_info_text()
+            self._update_button_states()
+            self.update_plot()
+
+            messagebox.showinfo("多峰フィット成功", f"{len(fitted_peaks)} 個のピークをフィットしました。")
+        except Exception as e:
+            messagebox.showerror("フィットエラー", f"多峰フィットに失敗しました:\n{e}")
+            logger.error(f"Multi-peak fit error: {e}")
+
+    def _jump_to_peak(self: 'PeakPickerGUI', peak_index: int):
+        """Center the view on a chosen peak."""
+        if not (0 <= peak_index < len(self.peaks)):
+            return
+
+        self.selected_peak_index = peak_index
+        self.center_pos = self.peaks[peak_index].center_tof
+        self.update_plot()
+
+    def _set_peak_status(self: 'PeakPickerGUI', peak_index: int, status: str):
+        """Set peak status and refresh UI."""
+        if not (0 <= peak_index < len(self.peaks)):
+            return
+
+        self.peaks[peak_index].status = status
+        self.selected_peak_index = peak_index
+        self._update_peak_table()
+        self._update_info_text()
+        self._update_button_states()
+        self.update_plot()
+
+    def on_plot_scroll(self: 'PeakPickerGUI', event):
+        """Handle mouse wheel zoom (Ctrl modifies y-scale)."""
+        if self.spectrum is None or event.inaxes != self.ax:
+            return
+
+        factor = 1.2 if event.step > 0 else 1 / 1.2
+        if event.key and 'control' in event.key.lower():
+            # Adjust vertical sensitivity
+            self.y_scale_factor = max(0.1, min(10.0, self.y_scale_factor * factor))
+        else:
+            # Horizontal zoom around cursor
+            tof_pos = self._convert_axis_to_tof(event.xdata)
+            if tof_pos is None:
+                return
+            if event.step > 0:
+                self.window_size = max(5, self.window_size / 1.2 if self.window_size else 50)
+            else:
+                self.window_size = self.window_size * 1.2 if self.window_size else 50
+            self.center_pos = tof_pos
+
+        self.update_plot()
+
     def on_axis_mode_change(self: 'PeakPickerGUI'):
         """Handle axis mode change (TOF/m/z)."""
         mode = self.axis_mode.get()
@@ -398,4 +704,9 @@ class ControlsMixin:
             except (ValueError, IndexError):
                 self.selected_peak_index = -1
 
+        if 0 <= self.selected_peak_index < len(self.peaks):
+            self.center_pos = self.peaks[self.selected_peak_index].center_tof
+
+        self._update_button_states()
+        self._update_info_text()
         self.update_plot()

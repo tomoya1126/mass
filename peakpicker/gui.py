@@ -61,6 +61,8 @@ class PeakPickerGUI(PlottingMixin, ControlsMixin):
         self.selected_peak_index = -1
         self.range_selection_points = []
         self.range_lines = []
+        self.drag_start = None
+        self.drag_span = None
         self.axis_mode = StringVar(value='tof')  # 'tof' or 'mz'
         self.analysis_mode = StringVar(value='peak_assign')  # 'peak_assign' or 'count_sum'
         self.summation_results_dict = OrderedDict()
@@ -69,6 +71,8 @@ class PeakPickerGUI(PlottingMixin, ControlsMixin):
         self.window_size = config.default_zoom_window
         self.center_pos = None
         self.cursor_text = None
+        self.y_scale_factor = 1.0
+        self.range_popup_menu = None
 
         # Setup matplotlib
         self.fig, self.ax = plt.subplots(figsize=(10, 5))
@@ -77,6 +81,8 @@ class PeakPickerGUI(PlottingMixin, ControlsMixin):
         # Event listener IDs
         self.click_cid = None
         self.motion_cid = None
+        self.release_cid = None
+        self.scroll_cid = None
 
         # Build GUI
         self._setup_gui()
@@ -166,12 +172,17 @@ class PeakPickerGUI(PlottingMixin, ControlsMixin):
         table_frame.grid(row=5, column=0, sticky="nsew", padx=5, pady=5)
 
         # Create Treeview for peak display
-        columns = ('ID', 'TOF', 'm/z', 'Height', 'FWHM', 'Area(Fit)', 'Area(Int)')
+        columns = ('ID', 'Status', 'TOF', 'm/z', 'Height', 'FWHM', 'Area(Fit)', 'Area(Int)')
         self.peak_tree = ttk.Treeview(table_frame, columns=columns, show='headings', height=8)
 
         for col in columns:
             self.peak_tree.heading(col, text=col)
-            width = 60 if col == 'ID' else 100
+            if col == 'ID':
+                width = 60
+            elif col == 'Status':
+                width = 80
+            else:
+                width = 100
             self.peak_tree.column(col, width=width, anchor='center')
 
         self.peak_tree.pack(side=LEFT, fill=BOTH, expand=True)
@@ -249,11 +260,19 @@ class PeakPickerGUI(PlottingMixin, ControlsMixin):
             # Connect events
             if self.click_cid:
                 self.canvas.mpl_disconnect(self.click_cid)
-            self.click_cid = self.canvas.mpl_connect('button_press_event', self.on_plot_click)
+            self.click_cid = self.canvas.mpl_connect('button_press_event', self.on_plot_button_press)
+
+            if self.release_cid:
+                self.canvas.mpl_disconnect(self.release_cid)
+            self.release_cid = self.canvas.mpl_connect('button_release_event', self.on_plot_button_release)
 
             if self.motion_cid:
                 self.canvas.mpl_disconnect(self.motion_cid)
             self.motion_cid = self.canvas.mpl_connect('motion_notify_event', self.on_plot_motion)
+
+            if self.scroll_cid:
+                self.canvas.mpl_disconnect(self.scroll_cid)
+            self.scroll_cid = self.canvas.mpl_connect('scroll_event', self.on_plot_scroll)
 
             # Display
             self.full_view()
@@ -360,8 +379,11 @@ class PeakPickerGUI(PlottingMixin, ControlsMixin):
         self.selected_peak_index = -1
         self.range_selection_points = []
         self.range_lines = []
+        self.drag_start = None
+        self.drag_span = None
         self.center_pos = None
         self.cursor_text = None
+        self.y_scale_factor = 1.0
 
         # Clear plot
         self.ax.cla()
@@ -425,6 +447,7 @@ class PeakPickerGUI(PlottingMixin, ControlsMixin):
 
             values = (
                 peak_id,
+                peak.status,
                 f"{peak.center_tof:.2f}",
                 mz_str,
                 f"{peak.height:.1f}",
@@ -460,9 +483,9 @@ class PeakPickerGUI(PlottingMixin, ControlsMixin):
         if mode == 'peak_assign':
             self.info_text.insert(END, "モード: ピーク同定\n")
             if self.calibration:
-                self.info_text.insert(END, "操作: プロット上で範囲を選択（2点クリック）→ 自動フィットボタンを押す\n")
+                self.info_text.insert(END, "操作: プロット上でドラッグ（または2点クリック）で範囲選択 → 自動フィットボタンを押す\n")
             else:
-                self.info_text.insert(END, "操作: プロット上で範囲を選択（2点クリック）→ 自動フィットボタンを押す → m/z を入力\n")
+                self.info_text.insert(END, "操作: プロット上でドラッグ（または2点クリック）で範囲選択 → 自動フィットボタンを押す → m/z を入力\n")
 
             self.info_text.insert(END, f"\n識別済みピーク数: {len(self.peaks)}\n")
 
