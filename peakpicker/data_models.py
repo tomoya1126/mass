@@ -129,6 +129,9 @@ class Peak:
     fit_residual: Optional[float] = None
     fit_success: bool = False
 
+    # Review state
+    status: str = 'proposed'  # 'proposed', 'accepted', 'rejected'
+
     # Graphics references (not serialized)
     line: Any = field(default=None, repr=False)
     text: Any = field(default=None, repr=False)
@@ -155,7 +158,8 @@ class Peak:
             'area_fit': self.area_fit,
             'fit_params': self.fit_params,
             'fit_residual': self.fit_residual,
-            'fit_success': self.fit_success
+            'fit_success': self.fit_success,
+            'status': self.status
         }
 
     @classmethod
@@ -177,7 +181,8 @@ class Peak:
             area_fit=data.get('area_fit'),
             fit_params=data.get('fit_params'),
             fit_residual=data.get('fit_residual'),
-            fit_success=data.get('fit_success', False)
+            fit_success=data.get('fit_success', False),
+            status=data.get('status', 'proposed')
         )
 
 

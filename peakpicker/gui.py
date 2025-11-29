@@ -69,6 +69,8 @@ class PeakPickerGUI(PlottingMixin, ControlsMixin):
         self.window_size = config.default_zoom_window
         self.center_pos = None
         self.cursor_text = None
+        self.drag_start = None
+        self.drag_span = None
 
         # Setup matplotlib
         self.fig, self.ax = plt.subplots(figsize=(10, 5))
@@ -166,12 +168,17 @@ class PeakPickerGUI(PlottingMixin, ControlsMixin):
         table_frame.grid(row=5, column=0, sticky="nsew", padx=5, pady=5)
 
         # Create Treeview for peak display
-        columns = ('ID', 'TOF', 'm/z', 'Height', 'FWHM', 'Area(Fit)', 'Area(Int)')
+        columns = ('状態', 'ID', 'TOF', 'm/z', 'Height', 'FWHM', 'Area(Fit)', 'Area(Int)')
         self.peak_tree = ttk.Treeview(table_frame, columns=columns, show='headings', height=8)
 
         for col in columns:
             self.peak_tree.heading(col, text=col)
-            width = 60 if col == 'ID' else 100
+            if col == 'ID':
+                width = 60
+            elif col == '状態':
+                width = 80
+            else:
+                width = 100
             self.peak_tree.column(col, width=width, anchor='center')
 
         self.peak_tree.pack(side=LEFT, fill=BOTH, expand=True)
@@ -254,6 +261,14 @@ class PeakPickerGUI(PlottingMixin, ControlsMixin):
             if self.motion_cid:
                 self.canvas.mpl_disconnect(self.motion_cid)
             self.motion_cid = self.canvas.mpl_connect('motion_notify_event', self.on_plot_motion)
+
+            if getattr(self, 'release_cid', None):
+                self.canvas.mpl_disconnect(self.release_cid)
+            self.release_cid = self.canvas.mpl_connect('button_release_event', self.on_plot_release)
+
+            if getattr(self, 'scroll_cid', None):
+                self.canvas.mpl_disconnect(self.scroll_cid)
+            self.scroll_cid = self.canvas.mpl_connect('scroll_event', self.on_scroll)
 
             # Display
             self.full_view()
@@ -349,6 +364,20 @@ class PeakPickerGUI(PlottingMixin, ControlsMixin):
                 pass
             self.motion_cid = None
 
+        if getattr(self, 'release_cid', None):
+            try:
+                self.canvas.mpl_disconnect(self.release_cid)
+            except:
+                pass
+            self.release_cid = None
+
+        if getattr(self, 'scroll_cid', None):
+            try:
+                self.canvas.mpl_disconnect(self.scroll_cid)
+            except:
+                pass
+            self.scroll_cid = None
+
         # Clear data
         self.spectrum = None
         self.original_spectrum = None
@@ -362,6 +391,8 @@ class PeakPickerGUI(PlottingMixin, ControlsMixin):
         self.range_lines = []
         self.center_pos = None
         self.cursor_text = None
+        self.drag_start = None
+        self.drag_span = None
 
         # Clear plot
         self.ax.cla()
@@ -415,6 +446,12 @@ class PeakPickerGUI(PlottingMixin, ControlsMixin):
             self.peak_tree.delete(item)
 
         # Add peaks
+        status_label = {
+            'proposed': '候補',
+            'accepted': '採用',
+            'rejected': '却下'
+        }
+
         for i, peak in enumerate(self.peaks):
             peak_id = i + 1
 
@@ -424,6 +461,7 @@ class PeakPickerGUI(PlottingMixin, ControlsMixin):
             area_int_str = f"{peak.area_integrated:.1f}" if peak.area_integrated else "N/A"
 
             values = (
+                status_label.get(peak.status, '候補'),
                 peak_id,
                 f"{peak.center_tof:.2f}",
                 mz_str,

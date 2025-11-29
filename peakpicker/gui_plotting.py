@@ -112,15 +112,29 @@ class PlottingMixin:
             # Check if peak is in view
             x_min, x_max = self.ax.get_xlim()
             if x_min <= x_pos <= x_max:
-                # Color based on selection
-                color = 'red' if i == self.selected_peak_index else 'blue'
+                # Color/style based on status and selection
+                status = getattr(peak, 'status', 'proposed')
+                color_map = {
+                    'proposed': 'blue',
+                    'accepted': 'darkgreen',
+                    'rejected': 'gray'
+                }
+                line_style_map = {
+                    'proposed': '--',
+                    'accepted': '-',
+                    'rejected': ':'
+                }
+
+                base_color = color_map.get(status, 'blue')
+                line_color = 'orange' if i == self.selected_peak_index else base_color
+                line_style = line_style_map.get(status, '--')
 
                 # Draw vertical line
-                line = self.ax.axvline(x=x_pos, color=color, ls='--', lw=0.8, label='_peak_line')
+                line = self.ax.axvline(x=x_pos, color=line_color, ls=line_style, lw=1.0, label='_peak_line')
 
                 # Draw label
                 txt_y = peak.height * 1.05 if peak.height * 1.05 < txt_y_default else txt_y_default
-                text = self.ax.text(x_pos, txt_y, label_text, color=color,
+                text = self.ax.text(x_pos, txt_y, label_text, color=line_color,
                                    ha='center', va='bottom', picker=5, label='_peak_text')
 
                 # Store references
@@ -224,6 +238,16 @@ class PlottingMixin:
             return
 
         x_pos = event.xdata
+
+        # Drag selection visualization
+        if self.drag_start is not None and x_pos is not None:
+            start = self.drag_start
+            end = self._event_to_tof(event)
+            if end is not None:
+                self._clear_drag_span()
+                span_start, span_end = sorted([start, end])
+                self.drag_span = self.ax.axvspan(span_start, span_end, color='orange', alpha=0.1, label='_drag')
+                self.canvas.draw_idle()
 
         # Convert to TOF if in m/z mode
         if self.axis_mode.get() == 'mz' and self.calibration:
