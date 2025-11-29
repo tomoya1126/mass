@@ -68,6 +68,7 @@ class PeakPickerGUI(PlottingMixin, ControlsMixin):
         self.summation_results_dict = OrderedDict()
         self.review_mode = False
         self.review_binding = None
+        self.dragging = False
 
         # Visualization
         self.window_size = config.default_zoom_window
@@ -83,9 +84,14 @@ class PeakPickerGUI(PlottingMixin, ControlsMixin):
         # Event listener IDs
         self.click_cid = None
         self.motion_cid = None
+        self.release_cid = None
+        self.scroll_cid = None
 
         # Build GUI
         self._setup_gui()
+
+        # Bind canvas interactions once widgets exist
+        self._connect_plot_events()
 
         # Update button states
         self._update_button_states()
@@ -309,21 +315,7 @@ class PeakPickerGUI(PlottingMixin, ControlsMixin):
             self.position_slider.config(to=len(self.spectrum.tof) - 1)
 
             # Connect events
-            if self.click_cid:
-                self.canvas.mpl_disconnect(self.click_cid)
-            self.click_cid = self.canvas.mpl_connect('button_press_event', self.on_plot_click)
-
-            if self.motion_cid:
-                self.canvas.mpl_disconnect(self.motion_cid)
-            self.motion_cid = self.canvas.mpl_connect('motion_notify_event', self.on_plot_motion)
-
-            if getattr(self, 'release_cid', None):
-                self.canvas.mpl_disconnect(self.release_cid)
-            self.release_cid = self.canvas.mpl_connect('button_release_event', self.on_plot_release)
-
-            if getattr(self, 'scroll_cid', None):
-                self.canvas.mpl_disconnect(self.scroll_cid)
-            self.scroll_cid = self.canvas.mpl_connect('scroll_event', self.on_scroll)
+            self._connect_plot_events()
 
             # Display
             self.full_view()

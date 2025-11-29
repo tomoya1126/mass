@@ -339,6 +339,34 @@ class ControlsMixin:
         self.spectrum.intensity = np.clip(self.spectrum.intensity, a_min=0, a_max=None)
         self.update_plot()
 
+    # ========================================================================
+    # Canvas event wiring
+    # ========================================================================
+    def _connect_plot_events(self: 'PeakPickerGUI'):
+        """(Re)connect matplotlib canvas events safely."""
+        if not hasattr(self, 'canvas'):
+            return
+
+        bindings = [
+            ('click_cid', 'button_press_event', 'on_plot_click'),
+            ('motion_cid', 'motion_notify_event', 'on_plot_motion'),
+            ('release_cid', 'button_release_event', 'on_plot_release'),
+            ('scroll_cid', 'scroll_event', 'on_scroll'),
+        ]
+
+        for cid_attr, event_name, handler_name in bindings:
+            prev_cid = getattr(self, cid_attr, None)
+            if prev_cid:
+                try:
+                    self.canvas.mpl_disconnect(prev_cid)
+                except Exception:
+                    pass
+
+            handler = getattr(self, handler_name, None)
+            if handler:
+                new_cid = self.canvas.mpl_connect(event_name, handler)
+                setattr(self, cid_attr, new_cid)
+
     def on_plot_click(self: 'PeakPickerGUI', event):
         """Handle mouse clicks for selection, drag, and context menu."""
         if event.inaxes != self.ax or self.spectrum is None:
@@ -365,9 +393,12 @@ class ControlsMixin:
 
         # Begin drag for range selection
         self.drag_start = tof_pos
+        self.dragging = False
         self._clear_drag_span()
 
-        # If no drag happens, a single click will select nearest peak on release
+        # Store click position so single clicks can still select even if release
+        # events are missed on some platforms.
+        self._select_nearest_peak(tof_pos)
 
     def _process_range_selection(self: 'PeakPickerGUI'):
         """Process the selected range based on current mode."""
@@ -446,7 +477,10 @@ class ControlsMixin:
             return
 
         # Determine if this was a drag
-        if self.drag_start is not None and abs(tof_pos - self.drag_start) > 0:
+        moved = self.dragging or (
+            self.drag_start is not None and abs(tof_pos - self.drag_start) > self._drag_threshold()
+        )
+        if self.drag_start is not None and moved:
             start, end = sorted([self.drag_start, tof_pos])
             self.range_selection_points = [start, end]
             self.range_lines = []
@@ -456,6 +490,7 @@ class ControlsMixin:
             self._select_nearest_peak(tof_pos)
 
         self.drag_start = None
+        self.dragging = False
         self._clear_drag_span()
 
     def on_scroll(self: 'PeakPickerGUI', event):
@@ -493,6 +528,11 @@ class ControlsMixin:
         if self.axis_mode.get() == 'mz' and self.calibration:
             return self.calibration.mz_to_tof(event.xdata)
         return event.xdata
+
+    def _drag_threshold(self: 'PeakPickerGUI') -> float:
+        """Return a small x-range threshold to distinguish drag vs click."""
+        x_min, x_max = self.ax.get_xlim()
+        return max((x_max - x_min) * 0.001, 1e-6)
 
     def _handle_double_click(self: 'PeakPickerGUI', tof_pos: float, event):
         """Toggle peak status based on double click rules."""
