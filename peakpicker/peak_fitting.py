@@ -77,6 +77,43 @@ def calculate_gaussian_area(amp: float, sigma: float) -> float:
     return amp * sigma * np.sqrt(2 * np.pi)
 
 
+def preprocess_signal(
+    spectrum: Spectrum,
+    roi: ROI,
+    smoothing_sigma: float = 0.0,
+    baseline_mode: str = "none"
+) -> Tuple[np.ndarray, np.ndarray, float]:
+    """
+    Apply smoothing and baseline correction on a ROI.
+
+    Returns processed intensity along with the baseline used for quality metrics.
+    """
+    tof_data, intensity_data = spectrum.get_range(roi.start, roi.end)
+    if len(tof_data) == 0:
+        return tof_data, intensity_data, 0.0
+
+    if smoothing_sigma and smoothing_sigma > 0:
+        intensity_proc = gaussian_filter1d(intensity_data, sigma=smoothing_sigma)
+    else:
+        intensity_proc = intensity_data.copy()
+
+    baseline = 0.0
+    if baseline_mode == "constant":
+        edge_points = np.concatenate([intensity_proc[:3], intensity_proc[-3:]])
+        baseline = float(np.mean(edge_points)) if len(edge_points) else 0.0
+        intensity_proc = intensity_proc - baseline
+    elif baseline_mode == "linear" and len(tof_data) >= 2:
+        # Fit simple line through edges and subtract
+        x_edges = np.array([tof_data[0], tof_data[-1]])
+        y_edges = np.array([intensity_proc[0], intensity_proc[-1]])
+        coeffs = np.polyfit(x_edges, y_edges, 1)
+        baseline_line = np.polyval(coeffs, tof_data)
+        baseline = float(np.mean(baseline_line))
+        intensity_proc = intensity_proc - baseline_line
+
+    return tof_data, intensity_proc, baseline
+
+
 # ============================================================================
 # Level 1: Single Peak Fitting
 # ============================================================================
@@ -84,7 +121,9 @@ def calculate_gaussian_area(amp: float, sigma: float) -> float:
 def fit_single_peak(
     spectrum: Spectrum,
     roi: ROI,
-    model: str = 'gaussian'
+    model: str = 'gaussian',
+    smoothing_sigma: float = 0.0,
+    baseline_mode: str = "none"
 ) -> Peak:
     """
     Fit a single peak within the specified ROI.
@@ -103,8 +142,10 @@ def fit_single_peak(
     """
     logger.info(f"Fitting single peak in range {roi.start:.2f} - {roi.end:.2f}")
 
-    # Extract data in ROI
-    tof_data, intensity_data = spectrum.get_range(roi.start, roi.end)
+    # Extract data in ROI with preprocessing
+    tof_data, intensity_data, baseline_used = preprocess_signal(
+        spectrum, roi, smoothing_sigma=smoothing_sigma, baseline_mode=baseline_mode
+    )
 
     if len(tof_data) == 0:
         raise ValueError(f"No data points found in ROI {roi.start} - {roi.end}")
@@ -166,10 +207,16 @@ def fit_single_peak(
         # Calculate simple numerical integration for comparison
         area_integrated = np.trapz(intensity_data - offset_fit, tof_data)
 
-        # Calculate residual (chi-square)
+        # Calculate residual (chi-square) and SNR
         y_fit = gaussian(tof_data, *popt)
         residuals = intensity_data - y_fit
         chi_square = np.sum(residuals ** 2) / len(tof_data)
+        noise_floor = np.std(residuals) if len(residuals) > 1 else 0.0
+        snr = (amp_fit / noise_floor) if noise_floor > 0 else None
+        # Quality score: heuristic between 0 and 1
+        quality_score = None
+        if snr is not None:
+            quality_score = max(0.0, min(1.0, 1.0 - min(chi_square, 1e6) / (1e3 + chi_square) + np.tanh(snr / 10) * 0.5))
 
         logger.info(f"Fit successful: center={center_fit:.2f}, sigma={sigma_fit:.2f}, "
                     f"FWHM={fwhm:.2f}, area={area_fit:.1f}")
@@ -190,6 +237,8 @@ def fit_single_peak(
                 'offset': offset_fit
             },
             fit_residual=chi_square,
+            snr=snr,
+            quality_score=quality_score,
             fit_success=True
         )
 
@@ -230,7 +279,8 @@ class PeakDetectionParams:
 def detect_and_fit_peaks(
     spectrum: Spectrum,
     roi: ROI,
-    params: Optional[PeakDetectionParams] = None
+    params: Optional[PeakDetectionParams] = None,
+    baseline_mode: str = "none"
 ) -> List[Peak]:
     """
     Automatically detect and fit multiple peaks within a range.
@@ -252,7 +302,9 @@ def detect_and_fit_peaks(
     logger.info(f"Auto-detecting peaks in range {roi.start:.2f} - {roi.end:.2f}")
 
     # Extract data in ROI
-    tof_data, intensity_data = spectrum.get_range(roi.start, roi.end)
+    tof_data, intensity_data, _ = preprocess_signal(
+        spectrum, roi, smoothing_sigma=params.smoothing_sigma if params else 0.0, baseline_mode=baseline_mode
+    )
 
     if len(tof_data) == 0:
         logger.warning("No data in ROI")
@@ -310,7 +362,12 @@ def detect_and_fit_peaks(
         )
 
         try:
-            peak = fit_single_peak(spectrum, peak_roi)
+            peak = fit_single_peak(
+                spectrum,
+                peak_roi,
+                smoothing_sigma=params.smoothing_sigma,
+                baseline_mode=baseline_mode
+            )
             fitted_peaks.append(peak)
             logger.debug(f"Fitted peak at TOF={peak.center_tof:.2f}")
         except Exception as e:
@@ -330,7 +387,9 @@ def fit_overlapping_peaks(
     spectrum: Spectrum,
     roi: ROI,
     n_peaks: int = 2,
-    initial_centers: Optional[List[float]] = None
+    initial_centers: Optional[List[float]] = None,
+    smoothing_sigma: float = 0.0,
+    baseline_mode: str = "none"
 ) -> List[Peak]:
     """
     Fit multiple overlapping Gaussian peaks simultaneously.
@@ -355,7 +414,9 @@ def fit_overlapping_peaks(
     logger.info(f"Fitting {n_peaks} overlapping peaks in range {roi.start:.2f} - {roi.end:.2f}")
 
     # Extract data
-    tof_data, intensity_data = spectrum.get_range(roi.start, roi.end)
+    tof_data, intensity_data, _ = preprocess_signal(
+        spectrum, roi, smoothing_sigma=smoothing_sigma, baseline_mode=baseline_mode
+    )
 
     if len(tof_data) < n_peaks * 4:
         raise ValueError(f"Insufficient data points ({len(tof_data)}) for fitting {n_peaks} peaks")
@@ -433,6 +494,7 @@ def fit_overlapping_peaks(
             height_fit = amp_fit + offset_fit
             fwhm = calculate_fwhm(sigma_fit)
             area_fit = calculate_gaussian_area(amp_fit, sigma_fit)
+            area_integrated = np.trapz(intensity_data - offset_fit, tof_data)
 
             # Create individual ROI for this peak (approximate)
             peak_roi = ROI(
@@ -448,6 +510,7 @@ def fit_overlapping_peaks(
                 sigma=sigma_fit,
                 fwhm=fwhm,
                 area_fit=area_fit,
+                area_integrated=area_integrated,
                 fit_params={
                     'amp': amp_fit,
                     'center': center_fit,
@@ -466,8 +529,13 @@ def fit_overlapping_peaks(
         residuals = intensity_data - y_fit
         chi_square = np.sum(residuals ** 2) / len(tof_data)
 
+        noise_floor = np.std(residuals) if len(residuals) > 1 else 0.0
         for peak in fitted_peaks:
             peak.fit_residual = chi_square
+            if noise_floor > 0:
+                amp = peak.fit_params.get('amp', peak.height)
+                peak.snr = amp / noise_floor
+                peak.quality_score = max(0.0, min(1.0, 1.0 - min(chi_square, 1e6) / (1e3 + chi_square) + np.tanh(peak.snr / 10) * 0.5))
 
         logger.info(f"Multi-peak fit successful: fitted {len(fitted_peaks)} peaks, χ²={chi_square:.2e}")
 

@@ -63,6 +63,8 @@ class PeakPickerGUI(PlottingMixin, ControlsMixin):
         self.range_lines = []
         self.axis_mode = StringVar(value='tof')  # 'tof' or 'mz'
         self.analysis_mode = StringVar(value='peak_assign')  # 'peak_assign' or 'count_sum'
+        self.baseline_mode = StringVar(value=config.baseline_mode)
+        self.smoothing_sigma_var = tk.DoubleVar(value=config.peak_smoothing_sigma)
         self.summation_results_dict = OrderedDict()
 
         # Visualization
@@ -128,10 +130,27 @@ class PeakPickerGUI(PlottingMixin, ControlsMixin):
 
         # Baseline subtraction
         Label(ctrl_frame_0, text="BG減算:").pack(side=LEFT, padx=(20, 2))
+        baseline_options = ["none", "constant", "linear"]
+        self.baseline_mode_menu = ttk.Combobox(
+            ctrl_frame_0, values=baseline_options, width=10,
+            state="readonly", textvariable=self.baseline_mode
+        )
+        try:
+            idx = baseline_options.index(self.baseline_mode.get())
+        except ValueError:
+            idx = 0
+            self.baseline_mode.set(baseline_options[idx])
+        self.baseline_mode_menu.current(idx)
+        self.baseline_mode_menu.pack(side=LEFT, padx=2)
         self.baseline_entry = Entry(ctrl_frame_0, width=8)
+        self.baseline_entry.insert(0, "auto")
         self.baseline_entry.pack(side=LEFT, padx=2)
-        self.baseline_btn = Button(ctrl_frame_0, text="実行", width=8, command=self.subtract_baseline)
+        self.baseline_btn = Button(ctrl_frame_0, text="適用", width=8, command=self.subtract_baseline)
         self.baseline_btn.pack(side=LEFT, padx=2)
+        Label(ctrl_frame_0, text="平滑σ:").pack(side=LEFT, padx=(10, 2))
+        self.smoothing_entry = Entry(ctrl_frame_0, width=6)
+        self.smoothing_entry.insert(0, f"{self.smoothing_sigma_var.get():.1f}")
+        self.smoothing_entry.pack(side=LEFT, padx=2)
 
         # Control frame row 1 - Analysis controls
         ctrl_frame_1 = Frame(self.root)
@@ -153,9 +172,39 @@ class PeakPickerGUI(PlottingMixin, ControlsMixin):
                                        command=self.delete_selected_peak)
         self.delete_peak_btn.pack(side=RIGHT, padx=2)
 
+        # Control frame row 2 - Preprocessing and detection params
+        ctrl_frame_params = Frame(self.root)
+        ctrl_frame_params.grid(row=4, column=0, sticky="ew", padx=5, pady=2)
+
+        Label(ctrl_frame_params, text="検出高さ:").pack(side=LEFT, padx=2)
+        self.min_height_entry = Entry(ctrl_frame_params, width=8)
+        if self.config.peak_min_height is not None:
+            self.min_height_entry.insert(0, f"{self.config.peak_min_height}")
+        else:
+            self.min_height_entry.insert(0, "auto")
+        self.min_height_entry.pack(side=LEFT, padx=2)
+
+        Label(ctrl_frame_params, text="最小距離:").pack(side=LEFT, padx=2)
+        self.min_distance_entry = Entry(ctrl_frame_params, width=6)
+        self.min_distance_entry.insert(0, str(self.config.peak_min_distance))
+        self.min_distance_entry.pack(side=LEFT, padx=2)
+
+        Label(ctrl_frame_params, text="顕著さ:").pack(side=LEFT, padx=2)
+        self.prominence_entry = Entry(ctrl_frame_params, width=8)
+        if self.config.peak_prominence is not None:
+            self.prominence_entry.insert(0, f"{self.config.peak_prominence}")
+        else:
+            self.prominence_entry.insert(0, "auto")
+        self.prominence_entry.pack(side=LEFT, padx=2)
+
+        Label(ctrl_frame_params, text="フィット前平滑σ:").pack(side=LEFT, padx=(10, 2))
+        self.fit_smoothing_entry = Entry(ctrl_frame_params, width=6)
+        self.fit_smoothing_entry.insert(0, f"{self.config.peak_smoothing_sigma}")
+        self.fit_smoothing_entry.pack(side=LEFT, padx=2)
+
         # Control frame row 2 - Mode selection
         ctrl_frame_2 = Frame(self.root)
-        ctrl_frame_2.grid(row=4, column=0, sticky="ew", padx=5, pady=2)
+        ctrl_frame_2.grid(row=5, column=0, sticky="ew", padx=5, pady=2)
 
         Label(ctrl_frame_2, text="解析モード:").pack(side=LEFT, padx=2)
         Radiobutton(ctrl_frame_2, text="ピーク同定", variable=self.analysis_mode,
@@ -165,16 +214,16 @@ class PeakPickerGUI(PlottingMixin, ControlsMixin):
 
         # Peak table frame
         table_frame = Frame(self.root)
-        table_frame.grid(row=5, column=0, sticky="nsew", padx=5, pady=5)
+        table_frame.grid(row=6, column=0, sticky="nsew", padx=5, pady=5)
 
         # Create Treeview for peak display
-        columns = ('状態', 'ID', 'TOF', 'm/z', 'Height', 'FWHM', 'Area(Fit)', 'Area(Int)')
+        columns = ('状態', 'ID', 'TOF', 'm/z', 'Height', 'FWHM', 'Area(Fit)', 'Area(Int)', 'S/N', 'χ²', 'Score')
         self.peak_tree = ttk.Treeview(table_frame, columns=columns, show='headings', height=8)
 
         for col in columns:
             self.peak_tree.heading(col, text=col)
-            if col == 'ID':
-                width = 60
+            if col in ['ID', 'S/N', 'χ²', 'Score']:
+                width = 70
             elif col == '状態':
                 width = 80
             else:
@@ -193,14 +242,14 @@ class PeakPickerGUI(PlottingMixin, ControlsMixin):
 
         # Info text frame
         info_frame = Frame(self.root)
-        info_frame.grid(row=6, column=0, sticky="nsew", padx=5, pady=5)
+        info_frame.grid(row=7, column=0, sticky="nsew", padx=5, pady=5)
 
         self.info_text = Text(info_frame, height=6, width=60)
         self.info_text.pack(fill=BOTH, expand=True)
 
         # Scrollbar frame (horizontal slider for navigation)
         scroll_frame = Frame(self.root)
-        scroll_frame.grid(row=7, column=0, sticky="ew", padx=5, pady=(0, 5))
+        scroll_frame.grid(row=8, column=0, sticky="ew", padx=5, pady=(0, 5))
 
         self.position_slider = Scale(scroll_frame, from_=0, to=100, orient=HORIZONTAL,
                                      command=self.on_slider_move, length=400)
@@ -208,8 +257,8 @@ class PeakPickerGUI(PlottingMixin, ControlsMixin):
 
         # Configure grid weights
         self.root.grid_rowconfigure(1, weight=4)  # Graph
-        self.root.grid_rowconfigure(5, weight=2)  # Table
-        self.root.grid_rowconfigure(6, weight=1)  # Info
+        self.root.grid_rowconfigure(6, weight=2)  # Table
+        self.root.grid_rowconfigure(7, weight=1)  # Info
         self.root.grid_columnconfigure(0, weight=1)
 
     # ========================================================================
@@ -296,7 +345,8 @@ class PeakPickerGUI(PlottingMixin, ControlsMixin):
             base_name = os.path.splitext(self.spectrum.metadata['filename'])[0]
 
         # Export peaks
-        if self.peaks:
+        accepted_peaks = [p for p in self.peaks if getattr(p, 'status', 'proposed') == 'accepted']
+        if accepted_peaks:
             try:
                 file_path = filedialog.asksaveasfilename(
                     title="ピークリストを保存",
@@ -306,12 +356,14 @@ class PeakPickerGUI(PlottingMixin, ControlsMixin):
                 )
 
                 if file_path:
-                    save_peaks_to_csv(self.peaks, file_path, include_fit_results=True)
+                    save_peaks_to_csv(accepted_peaks, file_path, include_fit_results=True)
                     messagebox.showinfo("エクスポート完了", f"ピークリストを保存しました:\n{os.path.basename(file_path)}")
 
             except Exception as e:
                 messagebox.showerror("エクスポートエラー", f"ピークリストの保存に失敗しました:\n{e}")
                 logger.error(f"Export error: {e}")
+        elif self.peaks:
+            messagebox.showinfo("エクスポート", "採用済みピークがありません。")
 
         # Export summation results if in count_sum mode
         if self.summation_results_dict:
@@ -460,6 +512,10 @@ class PeakPickerGUI(PlottingMixin, ControlsMixin):
             area_fit_str = f"{peak.area_fit:.1f}" if peak.area_fit else "N/A"
             area_int_str = f"{peak.area_integrated:.1f}" if peak.area_integrated else "N/A"
 
+            snr_str = f"{peak.snr:.1f}" if peak.snr else "N/A"
+            chi_str = f"{peak.fit_residual:.2e}" if peak.fit_residual is not None else "N/A"
+            score_str = f"{peak.quality_score:.2f}" if peak.quality_score is not None else "N/A"
+
             values = (
                 status_label.get(peak.status, '候補'),
                 peak_id,
@@ -468,7 +524,10 @@ class PeakPickerGUI(PlottingMixin, ControlsMixin):
                 f"{peak.height:.1f}",
                 fwhm_str,
                 area_fit_str,
-                area_int_str
+                area_int_str,
+                snr_str,
+                chi_str,
+                score_str
             )
 
             # Insert item

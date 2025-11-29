@@ -8,6 +8,7 @@ Handles user interactions: calibration, peak fitting, range selection, etc.
 import logging
 import tkinter as tk
 import numpy as np
+from scipy.ndimage import gaussian_filter1d
 from tkinter import messagebox, simpledialog
 from typing import TYPE_CHECKING
 
@@ -30,10 +31,66 @@ logger = logging.getLogger(__name__)
 class ControlsMixin:
     """Mixin class providing control methods for GUI."""
 
+    def _get_detection_params(self: 'PeakPickerGUI'):
+        """Parse detection parameters from UI inputs."""
+        def _parse_float(entry_val):
+            val = entry_val.strip().lower()
+            if val in ('', 'auto', 'none'):
+                return None
+            try:
+                return float(val)
+            except ValueError:
+                return None
+
+        min_height = _parse_float(self.min_height_entry.get())
+        prominence = _parse_float(self.prominence_entry.get())
+        try:
+            min_distance = int(float(self.min_distance_entry.get()))
+        except ValueError:
+            min_distance = self.config.peak_min_distance
+
+        try:
+            smoothing_sigma = float(self.fit_smoothing_entry.get())
+        except ValueError:
+            smoothing_sigma = self.config.peak_smoothing_sigma
+
+        # Persist back to config for next session
+        self.config.peak_min_height = min_height
+        self.config.peak_prominence = prominence
+        self.config.peak_min_distance = min_distance
+        self.config.peak_smoothing_sigma = smoothing_sigma
+
+        return PeakDetectionParams(
+            min_height=min_height,
+            min_distance=min_distance,
+            prominence=prominence,
+            smoothing_sigma=smoothing_sigma
+        )
+
+    def _current_baseline_mode(self: 'PeakPickerGUI') -> str:
+        mode = self.baseline_mode.get()
+        if mode not in ['none', 'constant', 'linear']:
+            mode = 'none'
+        self.config.baseline_mode = mode
+        return mode
+
+    def _get_fit_smoothing_sigma(self: 'PeakPickerGUI') -> float:
+        try:
+            sigma = float(self.fit_smoothing_entry.get())
+            if sigma < 0:
+                sigma = 0.0
+        except ValueError:
+            sigma = self.config.peak_smoothing_sigma
+        self.config.peak_smoothing_sigma = sigma
+        return sigma
+
     def calibrate_mass(self: 'PeakPickerGUI'):
         """Perform mass calibration using identified peaks."""
         # Need at least 2 peaks with m/z values
-        valid_peaks = [p for p in self.peaks if p.center_mz is not None and p.center_mz > 0]
+        valid_peaks = [
+            p for p in self.peaks
+            if p.center_mz is not None and p.center_mz > 0 and getattr(p, 'status', 'proposed') == 'accepted'
+        ]
 
         if len(valid_peaks) < 2:
             messagebox.showwarning(
@@ -92,8 +149,11 @@ class ControlsMixin:
         tof_start, tof_end = sorted(self.range_selection_points)
         roi = ROI(start=tof_start, end=tof_end, axis_type='tof')
 
+        baseline_mode = self._current_baseline_mode()
+        smoothing_sigma = self._get_fit_smoothing_sigma()
+
         try:
-            peak = fit_single_peak(self.spectrum, roi)
+            peak = fit_single_peak(self.spectrum, roi, smoothing_sigma=smoothing_sigma, baseline_mode=baseline_mode)
 
             # Assign m/z if calibrated
             if self.calibration:
@@ -159,15 +219,13 @@ class ControlsMixin:
         roi = ROI(start=tof_start, end=tof_end, axis_type='tof')
 
         # Get detection parameters from config
-        params = PeakDetectionParams(
-            min_height=self.config.peak_min_height,
-            min_distance=self.config.peak_min_distance,
-            prominence=self.config.peak_prominence,
-            smoothing_sigma=self.config.peak_smoothing_sigma
-        )
+        params = self._get_detection_params()
+        baseline_mode = self._current_baseline_mode()
 
         try:
-            detected_peaks = detect_and_fit_peaks(self.spectrum, roi, params)
+            detected_peaks = detect_and_fit_peaks(
+                self.spectrum, roi, params, baseline_mode=baseline_mode
+            )
 
             if not detected_peaks:
                 messagebox.showinfo("ピーク検出", "指定範囲にピークが検出されませんでした。")
@@ -247,25 +305,39 @@ class ControlsMixin:
             messagebox.showwarning("BG減算", "スペクトルデータを読み込んでください。")
             return
 
-        val_str = self.baseline_entry.get().strip()
+        mode = self._current_baseline_mode()
+        val_str = self.baseline_entry.get().strip().lower()
+        smoothing_sigma = self._get_fit_smoothing_sigma()
 
-        if not val_str:
-            # Restore original
-            if not np.array_equal(self.spectrum.intensity, self.original_spectrum.intensity):
-                self.spectrum.intensity = self.original_spectrum.intensity.copy()
-                logger.info("Restored original intensity")
-                self.update_plot()
-                self.baseline_entry.delete(0, 'end')
-            return
+        if mode == 'none' or val_str in ['', 'none', 'auto']:
+            # Restore original and optional smoothing
+            self.spectrum.intensity = self.original_spectrum.intensity.copy()
+        else:
+            data = self.original_spectrum.intensity.copy()
+            if mode == 'constant':
+                try:
+                    offset = float(val_str)
+                except ValueError:
+                    # auto mode: mean of edges
+                    offset = float(np.mean(np.concatenate([data[:5], data[-5:]])))
+                data = (data - offset)
+                logger.info(f"Subtracted constant baseline: {offset}")
+            elif mode == 'linear':
+                x_edges = np.array([self.original_spectrum.tof[0], self.original_spectrum.tof[-1]])
+                y_edges = np.array([data[0], data[-1]])
+                coeffs = np.polyfit(x_edges, y_edges, 1)
+                baseline_line = np.polyval(coeffs, self.original_spectrum.tof)
+                data = data - baseline_line
+                logger.info("Subtracted linear baseline")
 
-        try:
-            val = float(val_str)
-            self.spectrum.intensity = (self.original_spectrum.intensity - val).clip(min=0)
-            logger.info(f"Subtracted baseline: {val}")
-            self.update_plot()
+            self.spectrum.intensity = data
 
-        except ValueError:
-            messagebox.showerror("入力エラー", "有効な数値を入力してください。")
+        if smoothing_sigma and smoothing_sigma > 0:
+            self.spectrum.intensity = gaussian_filter1d(self.spectrum.intensity, sigma=smoothing_sigma)
+            logger.info(f"Applied smoothing sigma={smoothing_sigma}")
+
+        self.spectrum.intensity = np.clip(self.spectrum.intensity, a_min=0, a_max=None)
+        self.update_plot()
 
     def on_plot_click(self: 'PeakPickerGUI', event):
         """Handle mouse clicks for selection, drag, and context menu."""
@@ -476,6 +548,9 @@ class ControlsMixin:
             menu.add_command(label="このピークを採用", command=lambda: self._set_peak_status(idx, 'accepted'))
             menu.add_command(label="このピークを却下", command=lambda: self._set_peak_status(idx, 'rejected'))
             menu.add_separator()
+            menu.add_command(label="このピークを単峰フィット", command=lambda: self._refit_peak_single(idx))
+            menu.add_command(label="このピークと近傍を多峰フィット", command=lambda: self._refit_peak_multi(idx))
+            menu.add_separator()
             menu.add_command(label="このピークにジャンプ", command=lambda: self._jump_to_peak(idx))
         else:
             menu.add_command(label="ここを中心にズームイン", command=lambda: self._zoom_to_position(tof_pos))
@@ -499,6 +574,86 @@ class ControlsMixin:
         self.center_pos = tof_pos
         self.window_size = max(self.window_size * 0.5, 1e-3)
         self.update_plot()
+
+    def _refit_peak_single(self: 'PeakPickerGUI', index: int):
+        """Re-fit a single peak around its current center."""
+        if self.spectrum is None or not (0 <= index < len(self.peaks)):
+            return
+        peak = self.peaks[index]
+        half_width = peak.fwhm * 2 if peak.fwhm else max(self.window_size * 0.1, 1.0)
+        roi = ROI(
+            start=max(self.spectrum.tof.min(), peak.center_tof - half_width),
+            end=min(self.spectrum.tof.max(), peak.center_tof + half_width),
+            axis_type='tof'
+        )
+        baseline_mode = self._current_baseline_mode()
+        smoothing_sigma = self._get_fit_smoothing_sigma()
+
+        try:
+            new_peak = fit_single_peak(
+                self.spectrum, roi,
+                smoothing_sigma=smoothing_sigma,
+                baseline_mode=baseline_mode
+            )
+            new_peak.status = peak.status
+            if self.calibration:
+                mz = self.calibration.tof_to_mz(new_peak.center_tof)
+                new_peak.center_mz = mz if mz else peak.center_mz
+            else:
+                new_peak.center_mz = peak.center_mz
+            self.peaks[index] = new_peak
+            self.selected_peak_index = index
+            self._update_peak_table()
+            self.update_plot()
+            logger.info("Re-fitted peak at index %s", index)
+        except Exception as exc:
+            messagebox.showerror("フィット失敗", f"単峰フィットに失敗しました:\n{exc}")
+
+    def _refit_peak_multi(self: 'PeakPickerGUI', index: int):
+        """Perform multi-peak fitting around the selected peak and neighbors."""
+        if self.spectrum is None or not (0 <= index < len(self.peaks)):
+            return
+        center = self.peaks[index].center_tof
+        window_half = max(self.window_size * 0.25, self.peaks[index].fwhm * 3 if self.peaks[index].fwhm else 10)
+        roi = ROI(
+            start=max(self.spectrum.tof.min(), center - window_half),
+            end=min(self.spectrum.tof.max(), center + window_half),
+            axis_type='tof'
+        )
+
+        # pick up to 3 closest peaks as initial centers
+        sorted_peaks = sorted(self.peaks, key=lambda p: abs(p.center_tof - center))
+        initial_centers = [p.center_tof for p in sorted_peaks[:3]]
+        baseline_mode = self._current_baseline_mode()
+        smoothing_sigma = self._get_fit_smoothing_sigma()
+
+        try:
+            fitted = fit_overlapping_peaks(
+                self.spectrum, roi,
+                n_peaks=min(3, len(initial_centers)),
+                initial_centers=initial_centers,
+                smoothing_sigma=smoothing_sigma,
+                baseline_mode=baseline_mode
+            )
+            if not fitted:
+                raise RuntimeError("多峰フィット結果が空です")
+            # Replace peaks that fall inside ROI with fitted ones preserving status for nearest
+            keep_outside = [p for p in self.peaks if not (roi.start <= p.center_tof <= roi.end)]
+            # Transfer statuses heuristically
+            for fitted_peak in fitted:
+                nearest_original = min(self.peaks, key=lambda p: abs(p.center_tof - fitted_peak.center_tof))
+                fitted_peak.status = nearest_original.status
+                if self.calibration:
+                    mz = self.calibration.tof_to_mz(fitted_peak.center_tof)
+                    if mz:
+                        fitted_peak.center_mz = mz
+            self.peaks = sorted(keep_outside + fitted, key=lambda p: p.center_tof)
+            self.selected_peak_index = self._find_nearest_peak_index(center)
+            self._update_peak_table()
+            self.update_plot()
+            messagebox.showinfo("多峰フィット", f"{len(fitted)} 本のピークを再フィットしました。")
+        except Exception as exc:
+            messagebox.showerror("フィット失敗", f"多峰フィットに失敗しました:\n{exc}")
 
     def _clear_drag_span(self: 'PeakPickerGUI'):
         """Remove any temporary drag span overlay."""

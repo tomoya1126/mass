@@ -314,11 +314,11 @@ def save_peaks_to_csv(peaks, file_path: str, include_fit_results: bool = True):
 
     # Reorder columns for readability
     preferred_order = [
-        'center_tof', 'center_mz', 'height',
+        'status', 'center_tof', 'center_mz', 'height',
         'roi_start', 'roi_end',
-        'area_integrated', 'area_fit',
+        'area_integrated', 'area_manual', 'area_fit',
         'fwhm', 'sigma',
-        'fit_residual', 'fit_success'
+        'fit_residual', 'snr', 'quality_score', 'fit_success'
     ]
     existing_cols = [col for col in preferred_order if col in df.columns]
     other_cols = [col for col in df.columns if col not in existing_cols]

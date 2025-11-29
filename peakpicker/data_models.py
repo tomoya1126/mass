@@ -102,6 +102,9 @@ class Peak:
         height: Peak height (maximum intensity)
         roi: ROI used for this peak (start/end range)
 
+        # Manual/auto metrics
+        area_manual: Optional manual integration value
+
         # Fit-related attributes (populated after fitting)
         sigma: Gaussian sigma (or equivalent width parameter)
         fwhm: Full Width at Half Maximum
@@ -109,6 +112,8 @@ class Peak:
         area_fit: Area calculated from fit parameters (e.g., Gaussian integral)
         fit_params: Dictionary of all fit parameters (model-specific)
         fit_residual: Fit quality metric (e.g., chi-square, R-squared)
+        snr: Simple signal-to-noise metric
+        quality_score: 0-1 score derived from residuals/SNR
         fit_success: Whether the fit converged successfully
 
         # Graphics references (for GUI)
@@ -121,12 +126,15 @@ class Peak:
     center_mz: Optional[float] = None
 
     # Fit results
+    area_manual: Optional[float] = None
     sigma: Optional[float] = None
     fwhm: Optional[float] = None
     area_integrated: Optional[float] = None
     area_fit: Optional[float] = None
     fit_params: Optional[Dict[str, float]] = None
     fit_residual: Optional[float] = None
+    snr: Optional[float] = None
+    quality_score: Optional[float] = None
     fit_success: bool = False
 
     # Review state
@@ -155,9 +163,12 @@ class Peak:
             'sigma': self.sigma,
             'fwhm': self.fwhm,
             'area_integrated': self.area_integrated,
+            'area_manual': self.area_manual,
             'area_fit': self.area_fit,
             'fit_params': self.fit_params,
             'fit_residual': self.fit_residual,
+            'snr': self.snr,
+            'quality_score': self.quality_score,
             'fit_success': self.fit_success,
             'status': self.status
         }
@@ -178,9 +189,12 @@ class Peak:
             sigma=data.get('sigma'),
             fwhm=data.get('fwhm'),
             area_integrated=data.get('area_integrated'),
+            area_manual=data.get('area_manual'),
             area_fit=data.get('area_fit'),
             fit_params=data.get('fit_params'),
             fit_residual=data.get('fit_residual'),
+            snr=data.get('snr'),
+            quality_score=data.get('quality_score'),
             fit_success=data.get('fit_success', False),
             status=data.get('status', 'proposed')
         )

@@ -10,6 +10,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from typing import TYPE_CHECKING
 
+from .peak_fitting import gaussian
+
 if TYPE_CHECKING:
     from .gui import PeakPickerGUI
 
@@ -69,7 +71,8 @@ class PlottingMixin:
 
         self.ax.set_xlim(min_x, max_x)
 
-        # Draw peaks
+        # Draw fitted curves then peaks
+        self._draw_fitted_curves(x_label)
         self._draw_peaks(x_label)
 
         # Draw range lines
@@ -114,6 +117,9 @@ class PlottingMixin:
             if x_min <= x_pos <= x_max:
                 # Color/style based on status and selection
                 status = getattr(peak, 'status', 'proposed')
+                if status == 'rejected' and i != self.selected_peak_index:
+                    continue
+
                 color_map = {
                     'proposed': 'blue',
                     'accepted': 'darkgreen',
@@ -140,6 +146,34 @@ class PlottingMixin:
                 # Store references
                 peak.line = line
                 peak.text = text
+
+    def _draw_fitted_curves(self: 'PeakPickerGUI', x_label: str):
+        """Overlay fitted curves for peaks."""
+        if not self.peaks:
+            return
+        for peak in self.peaks:
+            if not peak.fit_success or not peak.fit_params:
+                continue
+            mask = (self.spectrum.tof >= peak.roi.start) & (self.spectrum.tof <= peak.roi.end)
+            tof_seg = self.spectrum.tof[mask]
+            if len(tof_seg) < 3:
+                continue
+            amp = peak.fit_params.get('amp')
+            center = peak.fit_params.get('center')
+            sigma = peak.fit_params.get('sigma')
+            offset = peak.fit_params.get('offset', 0)
+            if None in (amp, center, sigma):
+                continue
+            y_fit = gaussian(tof_seg, amp, center, sigma, offset)
+            if x_label == 'm/z' and self.calibration:
+                x_seg = np.array([self.calibration.tof_to_mz(t) for t in tof_seg])
+                x_seg = x_seg[~np.isnan(x_seg)]
+                y_fit = y_fit[:len(x_seg)]
+            else:
+                x_seg = tof_seg
+
+            color = 'darkorange' if getattr(peak, 'status', 'proposed') == 'accepted' else 'slateblue'
+            self.ax.plot(x_seg, y_fit, color=color, lw=1.2, alpha=0.8, label='_fit')
 
     def _draw_range_lines(self: 'PeakPickerGUI', x_label: str):
         """Draw range selection lines."""
