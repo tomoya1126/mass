@@ -538,6 +538,81 @@ class ControlsMixin:
         self.update_plot()
         self._update_peak_table()
 
+    # ====================================================================
+    # Peak review mode
+    # ====================================================================
+    def toggle_review_mode(self: 'PeakPickerGUI'):
+        """Toggle keyboard-driven peak review mode."""
+        if self.review_mode:
+            self._stop_review_mode()
+        else:
+            self._start_review_mode()
+
+    def _start_review_mode(self: 'PeakPickerGUI'):
+        if not self.peaks:
+            messagebox.showinfo("レビュー", "レビューするピークがありません。検出またはフィットしてください。")
+            return
+
+        self.review_mode = True
+        # Prefer proposed peaks first
+        proposed_indices = [i for i, p in enumerate(self.peaks) if p.status == 'proposed']
+        self.selected_peak_index = proposed_indices[0] if proposed_indices else 0
+        self.center_pos = self.peaks[self.selected_peak_index].center_tof
+        self.review_btn.config(text="レビュー終了")
+
+        # Bind keys
+        if self.review_binding:
+            self.root.unbind('<Key>', self.review_binding)
+        self.review_binding = self.root.bind('<Key>', self._on_review_key)
+
+        self._update_peak_table()
+        self._update_info_text()
+        self.update_plot()
+        messagebox.showinfo(
+            "レビュー開始",
+            "A:採用 / D:却下 / S:保留\n← →: 前後のピークに移動",
+        )
+
+    def _stop_review_mode(self: 'PeakPickerGUI'):
+        self.review_mode = False
+        if self.review_binding:
+            self.root.unbind('<Key>', self.review_binding)
+            self.review_binding = None
+        self.review_btn.config(text="ピークレビュー開始")
+        self._update_info_text()
+        self.update_plot()
+
+    def _advance_review(self: 'PeakPickerGUI', step: int):
+        if not self.peaks:
+            self.selected_peak_index = -1
+            return
+        if self.selected_peak_index < 0:
+            self.selected_peak_index = 0
+        else:
+            self.selected_peak_index = (self.selected_peak_index + step) % len(self.peaks)
+        self.center_pos = self.peaks[self.selected_peak_index].center_tof
+        self.update_plot()
+        self._update_peak_table()
+
+    def _on_review_key(self: 'PeakPickerGUI', event):
+        if not self.review_mode:
+            return
+
+        key = event.keysym.lower()
+        if key == 'a':
+            self._set_peak_status(self.selected_peak_index, 'accepted')
+            self._advance_review(1)
+        elif key == 'd':
+            self._set_peak_status(self.selected_peak_index, 'rejected')
+            self._advance_review(1)
+        elif key == 's':
+            self._set_peak_status(self.selected_peak_index, 'proposed')
+            self._advance_review(1)
+        elif key in ('right', 'next'):
+            self._advance_review(1)
+        elif key in ('left', 'prior'):
+            self._advance_review(-1)
+
     def _show_context_menu(self: 'PeakPickerGUI', event):
         """Display context menu depending on cursor location."""
         menu = tk.Menu(self.root, tearoff=0)

@@ -66,6 +66,8 @@ class PeakPickerGUI(PlottingMixin, ControlsMixin):
         self.baseline_mode = StringVar(value=config.baseline_mode)
         self.smoothing_sigma_var = tk.DoubleVar(value=config.peak_smoothing_sigma)
         self.summation_results_dict = OrderedDict()
+        self.review_mode = False
+        self.review_binding = None
 
         # Visualization
         self.window_size = config.default_zoom_window
@@ -167,6 +169,10 @@ class PeakPickerGUI(PlottingMixin, ControlsMixin):
         self.fit_multi_btn = Button(ctrl_frame_1, text="範囲内ピーク自動検出＋フィット", width=22,
                                      command=self.auto_detect_and_fit)
         self.fit_multi_btn.pack(side=LEFT, padx=2)
+
+        self.review_btn = Button(ctrl_frame_1, text="ピークレビュー開始", width=16,
+                                  command=self.toggle_review_mode)
+        self.review_btn.pack(side=LEFT, padx=2)
 
         self.delete_peak_btn = Button(ctrl_frame_1, text="選択ピーク削除", width=12,
                                        command=self.delete_selected_peak)
@@ -436,6 +442,8 @@ class PeakPickerGUI(PlottingMixin, ControlsMixin):
         self.peaks = []
         self.calibration = None
         self.summation_results_dict = OrderedDict()
+        if self.review_mode:
+            self.toggle_review_mode()
 
         # Reset UI state
         self.selected_peak_index = -1
@@ -490,6 +498,7 @@ class PeakPickerGUI(PlottingMixin, ControlsMixin):
         self.fit_single_btn.config(state=state_data)
         self.fit_multi_btn.config(state=state_data)
         self.delete_peak_btn.config(state='normal' if has_selection else 'disabled')
+        self.review_btn.config(state='normal' if has_peaks else 'disabled')
 
     def _update_peak_table(self):
         """Update the peak table display."""
@@ -550,6 +559,14 @@ class PeakPickerGUI(PlottingMixin, ControlsMixin):
             self.info_text.insert(END, "キャリブレーション: 未実施\n")
 
         self.info_text.insert(END, "=" * 60 + "\n")
+
+        if self.review_mode and self.peaks:
+            current = self.peaks[self.selected_peak_index] if self.selected_peak_index >= 0 else self.peaks[0]
+            self.info_text.insert(
+                END,
+                "レビュー中: A=採用 / D=却下 / S=保留 / ←→=移動\n"
+                f"対象ピーク: {self.selected_peak_index + 1}/{len(self.peaks)}  TOF={current.center_tof:.2f}  状態={current.status}\n\n",
+            )
 
         # Show mode-specific info
         mode = self.analysis_mode.get()
