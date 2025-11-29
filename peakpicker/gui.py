@@ -46,13 +46,18 @@ class PeakPickerGUI(PlottingMixin, ControlsMixin):
         """Initialize the GUI application."""
         self.config = config
 
+        # Create main window FIRST (required for StringVar)
+        self.root = tk.Tk()
+        self.root.title("PeakPicker - TOF-SIMS Spectrum Analyzer")
+        self.root.geometry(f"{config.window_width}x{config.window_height}")
+
         # Data
         self.spectrum: Optional[Spectrum] = None
         self.original_spectrum: Optional[Spectrum] = None
         self.peaks: List[Peak] = []
         self.calibration: Optional[CalibrationResult] = None
 
-        # UI state
+        # UI state (StringVar requires root window to exist)
         self.selected_peak_index = -1
         self.range_selection_points = []
         self.range_lines = []
@@ -64,11 +69,6 @@ class PeakPickerGUI(PlottingMixin, ControlsMixin):
         self.window_size = config.default_zoom_window
         self.center_pos = None
         self.cursor_text = None
-
-        # Create main window
-        self.root = tk.Tk()
-        self.root.title("PeakPicker - TOF-SIMS Spectrum Analyzer")
-        self.root.geometry(f"{config.window_width}x{config.window_height}")
 
         # Setup matplotlib
         self.fig, self.ax = plt.subplots(figsize=(10, 5))
