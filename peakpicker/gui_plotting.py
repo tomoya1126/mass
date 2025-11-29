@@ -278,13 +278,11 @@ class PlottingMixin:
             start = self.drag_start
             end = self._event_to_tof(event)
             if end is not None:
-                moved = abs(end - start) > self._drag_threshold()
-                if moved:
-                    self.dragging = True
-                    self._clear_drag_span()
-                    span_start, span_end = sorted([start, end])
-                    self.drag_span = self.ax.axvspan(span_start, span_end, color='orange', alpha=0.1, label='_drag')
-                    self.canvas.draw_idle()
+                self.dragging = True
+                self._clear_drag_span()
+                span_start, span_end = sorted([start, end])
+                self.drag_span = self.ax.axvspan(span_start, span_end, color='orange', alpha=0.1, label='_drag')
+                self.canvas.draw_idle()
 
         # Convert to TOF if in m/z mode
         if self.axis_mode.get() == 'mz' and self.calibration:

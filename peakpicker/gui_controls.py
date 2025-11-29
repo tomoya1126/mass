@@ -476,9 +476,9 @@ class ControlsMixin:
             self._clear_drag_span()
             return
 
-        # Determine if this was a drag
+        # Determine if this was a drag (any movement counts; no minimum span enforced)
         moved = self.dragging or (
-            self.drag_start is not None and abs(tof_pos - self.drag_start) > self._drag_threshold()
+            self.drag_start is not None and abs(tof_pos - self.drag_start) > 0
         )
         if self.drag_start is not None and moved:
             start, end = sorted([self.drag_start, tof_pos])
@@ -558,8 +558,8 @@ class ControlsMixin:
 
     def _drag_threshold(self: 'PeakPickerGUI') -> float:
         """Return a small x-range threshold to distinguish drag vs click."""
-        x_min, x_max = self.ax.get_xlim()
-        return max((x_max - x_min) * 0.001, 1e-6)
+        # No enforced minimum span; allow users to pick arbitrarily close points
+        return 0.0
 
     def _handle_double_click(self: 'PeakPickerGUI', tof_pos: float, event):
         """Toggle peak status based on double click rules."""
