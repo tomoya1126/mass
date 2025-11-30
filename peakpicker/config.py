@@ -23,6 +23,10 @@ class AppConfig:
     peak_prominence: float = None  # None = auto
     peak_smoothing_sigma: float = 2.0
 
+    # Pre-processing
+    baseline_mode: str = "none"  # none / constant / linear
+    smoothing_window: float = 0.0
+
     # Window settings
     window_width: int = 1200
     window_height: int = 800

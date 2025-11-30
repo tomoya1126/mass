@@ -56,6 +56,36 @@ def read_spectrum_file(file_path: str) -> Spectrum:
         raise FileReadError(f"Failed to read file: {str(e)}") from e
 
 
+def _find_numeric_data_start(lines, start_index: int = 0, min_run: int = 3) -> Optional[int]:
+    """Find the first line index where a numeric TOF/Count run begins."""
+    run_start = None
+    run_length = 0
+
+    for idx in range(start_index, len(lines)):
+        parts = lines[idx].strip().split()
+        if len(parts) < 2:
+            run_start = None
+            run_length = 0
+            continue
+
+        try:
+            float(parts[0])
+            float(parts[1])
+            if run_start is None:
+                run_start = idx
+                run_length = 1
+            else:
+                run_length += 1
+
+            if run_length >= min_run:
+                return run_start
+        except ValueError:
+            run_start = None
+            run_length = 0
+
+    return None
+
+
 def read_mpa_file(file_path: str) -> Spectrum:
     """
     Read MPA4 format file with robust header detection.
@@ -105,30 +135,33 @@ def read_mpa_file(file_path: str) -> Spectrum:
             "- Try converting the file using a text editor"
         )
 
-    # Find data start line using [TDAT marker
+    # Find data start line using [TDAT marker then numeric runs
     data_start_line = None
     tdat_pattern = re.compile(r'\[TDAT\d*[,\s]')
 
     for i, line in enumerate(lines):
         if tdat_pattern.search(line):
-            data_start_line = i + 1  # Data starts on the next line
-            logger.info(f"Found TDAT marker at line {i+1}, data starts at line {data_start_line+1}")
-            break
+            candidate = _find_numeric_data_start(lines, start_index=i + 1)
+            if candidate is not None:
+                data_start_line = candidate
+                logger.info(
+                    "Found TDAT marker at line %d, data run begins at line %d",
+                    i + 1,
+                    data_start_line + 1,
+                )
+                break
 
     if data_start_line is None:
-        # Fallback: Try to detect data by finding first line with two numbers
-        logger.warning("TDAT marker not found, attempting to detect data start by pattern")
-        for i, line in enumerate(lines):
-            parts = line.strip().split()
-            if len(parts) == 2:
-                try:
-                    float(parts[0])
-                    float(parts[1])
-                    data_start_line = i
-                    logger.info(f"Detected data start at line {i+1} (first numeric pair)")
-                    break
-                except ValueError:
-                    continue
+        # Fallback: detect first continuous numeric block
+        logger.warning("TDAT marker not found, attempting to detect data start by numeric run")
+        data_start_line = _find_numeric_data_start(lines, start_index=0)
+
+        if data_start_line is not None:
+            logger.info(
+                "Detected numeric data start at line %d (first >=%d-line run)",
+                data_start_line + 1,
+                3,
+            )
 
     if data_start_line is None:
         raise FileReadError(
@@ -314,11 +347,11 @@ def save_peaks_to_csv(peaks, file_path: str, include_fit_results: bool = True):
 
     # Reorder columns for readability
     preferred_order = [
-        'center_tof', 'center_mz', 'height',
+        'status', 'center_tof', 'center_mz', 'height',
         'roi_start', 'roi_end',
-        'area_integrated', 'area_fit',
+        'area_integrated', 'area_manual', 'area_fit',
         'fwhm', 'sigma',
-        'fit_residual', 'fit_success'
+        'fit_residual', 'snr', 'quality_score', 'fit_success'
     ]
     existing_cols = [col for col in preferred_order if col in df.columns]
     other_cols = [col for col in df.columns if col not in existing_cols]
